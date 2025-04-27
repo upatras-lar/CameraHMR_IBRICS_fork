@@ -12,6 +12,7 @@ def extract_frames(video_path: str, output_dir: str = "frames") -> None:
         .run(capture_stdout=True, capture_stderr=True)
     )
     print(f"Extracted frames to '{output_dir}/'")
+    return output_dir
 
 def run():
     parser = argparse.ArgumentParser(
@@ -28,4 +29,4 @@ def run():
     extract_frames(args.video, args.output_dir)
 
 if __name__ == "__main__":
-    run()
+    output_dir = run()

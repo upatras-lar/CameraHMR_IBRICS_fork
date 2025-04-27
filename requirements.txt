@@ -1,3 +1,5 @@
+
+# CameraHMR official reqs
 git+https://github.com/facebookresearch/detectron2.git
 pytorch-lightning==2.0.2
 smplx==0.1.28
@@ -18,3 +20,6 @@ chumpy
 flatten_dict
 jpeg4py
 joblib
+
+# IBRICS reqs
+ffmpeg-python

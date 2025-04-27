@@ -1,0 +1,11 @@
+data/**
+frames/**
+outputs/**
+*.pth
+*.pyc
+*.ckpt
+__pycache__/**   
+output_images/** 
+pose_output/**  
+json_output/**  
+image_output/** 
