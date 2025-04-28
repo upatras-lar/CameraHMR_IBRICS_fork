@@ -5,12 +5,18 @@ import argparse
 
 def extract_frames(video_path: str, output_dir: str = "frames") -> None:
     os.makedirs(output_dir, exist_ok=True)
-    (
-        ffmpeg
-        .input(video_path)
-        .output(os.path.join(output_dir, "frame_%05d.png"), start_number=0)
-        .run(capture_stdout=True, capture_stderr=True)
-    )
+    # (
+    #     ffmpeg
+    #     .input(video_path)
+    #     .output(os.path.join(output_dir, "frame_%05d.png"), start_number=0)
+    #     .run(capture_stdout=True, capture_stderr=True)
+    # )
+    
+    print(f"Running ffmpeg to extract frames:\n  ffmpeg -i {video_path} -start_number 0 {output_dir}/frame_%05d.png")
+    ffmpeg.input(video_path) \
+          .output(os.path.join(output_dir, "frame_%05d.png"), start_number=0) \
+          .run()   # ← drop capture_stdout / capture_stderr
+    
     print(f"Extracted frames to '{output_dir}/'")
     return output_dir
 
