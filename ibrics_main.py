@@ -67,7 +67,7 @@ def main():
     traj, params = estimator.run_on_video_frames(images_dir)
 
     # Make sure our outputs directory exists
-    out_dir = "outputs"
+    out_dir = "/env/outputs"
     os.makedirs(out_dir, exist_ok=True)
     # Build full output path
     mode = 'per-joint' if args.separate else 'per-frame'
