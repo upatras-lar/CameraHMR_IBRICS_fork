@@ -64,23 +64,32 @@ def main():
             parser.error(f"No images with extensions {exts} found in {images_dir}.")
 
     estimator = HumanMeshEstimator()
-    traj, params = estimator.run_on_video_frames(images_dir)
+    traj, params, traj_camera = estimator.run_on_video_frames(images_dir)
 
     # Make sure our outputs directory exists
     out_dir = "/env/outputs"
     os.makedirs(out_dir, exist_ok=True)
     # Build full output path
     mode = 'per-joint' if args.separate else 'per-frame'
-    output_path = os.path.join(out_dir, mode +"_"+ args.json_name)
+    output_path_local = os.path.join(out_dir, mode +"_local_"+ args.json_name)
+    output_path_camera = os.path.join(out_dir, mode +"_camera_"+ args.json_name)
 
     estimator.save_trajectories_json(
         trajectories=traj,
         params_list=params,
-        filename=output_path,
+        filename=output_path_local,
         separate_per_joint=args.separate
     )
     
-    print(f"Saved {mode} trajectories & parameters for {traj.shape[0]} frames to {output_path}")
+    estimator.save_trajectories_json(
+        trajectories=traj_camera,
+        params_list=params,
+        filename=(output_path_camera),
+        separate_per_joint=args.separate
+    )
+    
+    print(f"Saved {mode} trajectories & parameters in local space for {traj.shape[0]} frames to {output_path_local}")
+    print(f"Saved {mode} trajectories & parameters in camera space for {traj.shape[0]} frames to {output_path_camera}")
 
 
 if __name__ == '__main__':

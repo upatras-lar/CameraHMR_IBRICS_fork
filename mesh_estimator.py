@@ -189,6 +189,7 @@ class HumanMeshEstimator:
             paths.extend(glob(os.path.join(image_folder, e)))
         paths = sorted(paths)
         traj = []
+        traj_camera = []
         params_list = []
         for p in paths:
             img = cv2.imread(p)
@@ -197,6 +198,7 @@ class HumanMeshEstimator:
             boxes = inst.pred_boxes.tensor[mask].cpu().numpy()
             if len(boxes)==0:
                 traj.append(np.zeros((self.smpl_model.num_joints(),3)))
+                traj_camera.append(np.zeros((self.smpl_model.num_joints(),3)))
                 # append empty params
                 params_list.append({k: np.zeros_like(v[0].cpu().numpy()).tolist() for k,v in {}
                                      .items()})
@@ -224,14 +226,18 @@ class HumanMeshEstimator:
                 params_list.append(frame_params)
                 # compute joints
                 verts, joints_local, cam_t = self.get_output_mesh(params, cam_pred, b)
+                # print(verts)
                 
                 # Determine how many body joints the model actually has:
                 n_body = self.smpl_model.J_regressor.shape[0]   # → 24 for SMPL-H
-                joints_body_local = joints_local[:, :n_body, :]  # shape (1, 24, 3)
-                joints_body_world = joints_body_local[0].cpu().numpy() + cam_t[0].cpu().numpy()[None, :]
-                traj.append(joints_body_world)
+                # joints_local = joints_local[:, :n_body, :]  # shape (1, 24, 3)
+                joints_body_camera = joints_local[0].cpu().numpy() + cam_t[0].cpu().numpy()[None, :]
+                joints_body_local = joints_local[0].cpu().numpy()
+                traj_camera.append(joints_body_camera)
+                traj.append(joints_body_local)
                 
-        return np.stack(traj,0), params_list
+                
+        return np.stack(traj,0), params_list, np.stack(traj_camera,0)
 
     def save_trajectories_json(self,
                            trajectories: np.ndarray,
