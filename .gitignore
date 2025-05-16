@@ -9,3 +9,4 @@ output_images/**
 pose_output/**  
 json_output/**  
 image_output/** 
+test_out/**

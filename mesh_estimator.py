@@ -203,16 +203,17 @@ class HumanMeshEstimator:
                 params_list.append({k: np.zeros_like(v[0].cpu().numpy()).tolist() for k,v in {}
                                      .items()})
                 continue
-            center = ((boxes[0,2:]+boxes[0,:2])/2)[None,:]
-            scale  = ((boxes[0,2:]-boxes[0,:2])/200)[None,:]
-            K = self.get_cam_intrinsics(img)
-            # prepare dataset
-            ds = Dataset(img, center, scale, K, False, None)
-            
-            ### Batch size 1 means that HMR and SMPL do not inference images in batches. This could be a serious speed up. 
-            ### At the same time though Detectron seems to be the biggest bottleneck in this and it cannot batch infere images so for now it remains as 1.
-            ### In case one wants to make the batch bigger then necessary changes to the code need to happen. 
-            dl = torch.utils.data.DataLoader(ds, batch_size=1)
+
+            # your existing cropping + cam_int extraction
+            center = ((boxes[0, 2:] + boxes[0, :2]) / 2)[None, :]
+            scale = ((boxes[0, 2:] - boxes[0, :2]) / 200)[None, :]
+            cam_int = self.get_cam_intrinsics(img)  # e.g. a (3×3) matrix or a vector
+
+            # build and run your DataLoader as before…
+            ds = Dataset(img, center, scale, cam_int, False, None)
+            dl = torch.utils.data.DataLoader(
+                ds, batch_size=1, shuffle=False
+            )
             for b in dl:
                 b = recursive_to(b, self.device)
                 with torch.no_grad():
@@ -223,6 +224,8 @@ class HumanMeshEstimator:
                     frame_params[k] = v[0].cpu().numpy().tolist()
                 # include camera pred if desired
                 frame_params['cam_pred'] = cam_pred[0].cpu().numpy().tolist()
+                frame_params['focal_length'] = float(cam_int[0, 0])
+                
                 params_list.append(frame_params)
                 # compute joints
                 verts, joints_local, cam_t = self.get_output_mesh(params, cam_pred, b)
@@ -239,11 +242,13 @@ class HumanMeshEstimator:
                 
         return np.stack(traj,0), params_list, np.stack(traj_camera,0)
 
-    def save_trajectories_json(self,
-                           trajectories: np.ndarray,
-                           params_list: list,
-                           filename: str,
-                           separate_per_joint: bool=False):
+    def save_trajectories_json(
+        self,
+        trajectories: np.ndarray,
+        params_list: list,
+        filename: str,
+        separate_per_joint: bool = False,
+    ):
         """
         Save joint trajectories + SMPL parameters to JSON, with nested structure and shape info.
 
@@ -287,41 +292,34 @@ class HumanMeshEstimator:
             # Per‐frame: a list of objects, each containing that frame's trajectory+params
             frames = []
             for i in range(F):
-                frames.append({
-                    "trajectory": trajectories[i].tolist(),
-                    "parameters": params_list[i]
-                })
+                frames.append(
+                    {
+                        "trajectory": trajectories[i].tolist(),
+                        "parameters": params_list[i],
+                    }
+                )
             data["frames"] = frames
-            shapes = {
-                "num_frames": F,
-                "joints_per_frame": J,
-                "parameter_frames": F
-            }
+            shapes = {"num_frames": F, "joints_per_frame": J, "parameter_frames": F}
         else:
             # Per‐joint: group trajectories by joint, but keep params per frame
-            trajs = {
-                f"joint_{j}": trajectories[:, j, :].tolist()
-                for j in range(J)
-            }
+            trajs = {f"joint_{j}": trajectories[:, j, :].tolist() for j in range(J)}
             data["trajectories"] = trajs
-            params_by_frame = {
-                f"frame_{i}": params_list[i]
-                for i in range(F)
-            }
+            params_by_frame = {f"frame_{i}": params_list[i] for i in range(F)}
             data["parameters"] = params_by_frame
-            shapes = {
-                "num_joints": J,
-                "frames_per_joint": F,
-                "parameter_frames": F
-            }
+            shapes = {"num_joints": J, "frames_per_joint": F, "parameter_frames": F}
 
         # Compute average parameters across all frames
         avg_params = {}
+        std_params = {}
         if params_list:
             for key in params_list[0].keys():
+                # stack into shape (F, D…), where D… is parameter dimensionality
                 arr = np.stack([np.array(p[key]) for p in params_list], axis=0)
                 avg_params[key] = arr.mean(axis=0).tolist()
+                std_params[key] = arr.std(axis=0).tolist()
+
         data["average_parameters"] = avg_params
+        data["std_parameters"]     = std_params
 
         # Add our shape info
         data["shapes"] = shapes
@@ -329,7 +327,6 @@ class HumanMeshEstimator:
         # Write out
         with open(filename, "w") as f:
             json.dump(data, f, indent=2)
-
 
 
 # if __name__ == "__main__":
@@ -344,6 +341,3 @@ class HumanMeshEstimator:
 #     estimator.save_trajectories_json(traj, params, args.out, separate_per_joint=args.separate)
 #     mode = 'per-joint' if args.separate else 'per-frame'
 #     print(f"Saved {mode} trajectories & parameters for {traj.shape[0]} frames to {args.out}")
-    
-    
-    
