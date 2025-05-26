@@ -17,13 +17,15 @@ from core.constants import (
     DETECTRON_CKPT,
     DETECTRON_CFG,
 )
+from ultralytics import YOLO
+
 from core.datasets.dataset import Dataset
 from core.utils.renderer_pyrd import Renderer
 from core.utils import recursive_to
 from core.cam_model.fl_net import FLNet
 from core.constants import IMAGE_SIZE, IMAGE_MEAN, IMAGE_STD, NUM_BETAS
 import argparse
-
+import time
 
 def resize_image(img, target_size):
     height, width = img.shape[:2]
@@ -57,7 +59,8 @@ class HumanMeshEstimator:
     def __init__(self, smpl_model_path=SMPL_MODEL_PATH, threshold=0.25):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self.init_model().to(self.device).eval()
-        self.detector = self.init_detector(threshold)
+        # self.detector = self.init_detector(threshold)
+        self.detector = YOLO('yolov8s.pt')  # nano version for max FPS
         self.cam_model = self.init_cam_model().eval()
         self.smpl_model = smplx.SMPLLayer(model_path=smpl_model_path, num_betas=NUM_BETAS).to(self.device)
         self.normalize_img = Normalize(mean=IMAGE_MEAN, std=IMAGE_STD)
@@ -133,12 +136,33 @@ class HumanMeshEstimator:
         mesh_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}.obj')
 
         # Detect humans in the image
+        # det_out = self.detector(img_cv2)
+        # det_instances = det_out['instances']
+        # valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
+        # boxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
+        # bbox_scale = (boxes[:, 2:4] - boxes[:, 0:2]) / 200.0 
+        # bbox_center = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
+
+        # Detect humans in the image
+        # start_time = time.time() 
         det_out = self.detector(img_cv2)
-        det_instances = det_out['instances']
-        valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
-        boxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
-        bbox_scale = (boxes[:, 2:4] - boxes[:, 0:2]) / 200.0 
-        bbox_center = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
+        # stop_time = time.time()  # Start timing model estimation
+        # total_time = time.time() - start_time
+        print(f"Person detection time: {total_time:.2f}s")
+        # Get the bounding boxes of detected persons
+        det_instances = det_out[0].boxes
+        # Convert to tensor for easier filtering
+        boxes = det_instances.xyxy  # (N, 4) x1, y1, x2, y2
+        scores = det_instances.conf  # (N,)
+        classes = det_instances.cls  # (N,)
+        # Filter: class == 0 (person) and THRESHOLD (CONFIDENCE) score > 0.5
+        valid_idx = (classes == 0) & (scores > 0.5)
+        boxes = boxes[valid_idx]
+        # Now calculate bbox_center and bbox_scale like before
+        boxes_np = boxes.cpu().numpy()
+        bbox_scale = (boxes_np[:, 2:4] - boxes_np[:, 0:2]) / 200.0
+        bbox_center = (boxes_np[:, 2:4] + boxes_np[:, 0:2]) / 2.0
+
 
         # Get Camera intrinsics using HumanFoV Model
         cam_int = self.get_cam_intrinsics(img_cv2)
