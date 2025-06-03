@@ -32,6 +32,7 @@ Create a conda environment and install all the requirements.
 ```
 conda create -n camerahmr python=3.10
 conda activate camerahmr
+
 pip install torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.1 --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
 ```
@@ -41,6 +42,13 @@ pip install -r requirements.txt
 ###  **Download Required Files**
 
 Download necessary demo files using:
+
+Yolov8weights
+`wget https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8s.pt`
+# Verify
+# md5sum yolov8s.pt
+# 0a1d5d0619d5a24848a267ec1e3a3118  yolov8s.pt
+# download models provided by camerahmr team
 
 ```bash
 bash fetch_demo_data.sh

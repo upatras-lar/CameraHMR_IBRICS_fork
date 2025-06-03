@@ -17,12 +17,15 @@ from core.constants import (
     DETECTRON_CKPT,
     DETECTRON_CFG,
 )
+from ultralytics import YOLO
+
 from core.datasets.dataset import Dataset
 from core.utils.renderer_pyrd import Renderer
 from core.utils import recursive_to
 from core.cam_model.fl_net import FLNet
 from core.constants import IMAGE_SIZE, IMAGE_MEAN, IMAGE_STD, NUM_BETAS
 import argparse
+import time
 
 
 def resize_image(img, target_size):
@@ -57,9 +60,16 @@ class HumanMeshEstimator:
     def __init__(self, smpl_model_path=SMPL_MODEL_PATH, threshold=0.25):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self.init_model().to(self.device).eval()
-        self.detector = self.init_detector(threshold)
+
+        self.detection = "YOLO"
+        self.detector = YOLO("data/pretrained-models/yolov8s.pt")  # nano version for max FPS
+        # self.detection = "Detectron"
+        # self.detector = self.init_detector(threshold)
+
         self.cam_model = self.init_cam_model().eval()
-        self.smpl_model = smplx.SMPLLayer(model_path=smpl_model_path, num_betas=NUM_BETAS).to(self.device)
+        self.smpl_model = smplx.SMPLLayer(
+            model_path=smpl_model_path, num_betas=NUM_BETAS
+        ).to(self.device)
         self.normalize_img = Normalize(mean=IMAGE_MEAN, std=IMAGE_STD)
 
     def init_cam_model(self):
@@ -76,15 +86,19 @@ class HumanMeshEstimator:
         detectron2_cfg = LazyConfig.load(str(DETECTRON_CFG))
         detectron2_cfg.train.init_checkpoint = DETECTRON_CKPT
         for i in range(3):
-            detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = threshold
+            detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = (
+                threshold
+            )
         detector = DefaultPredictor_Lazy(detectron2_cfg)
         return detector
-    
-    def convert_to_full_img_cam(self, pare_cam, bbox_height, bbox_center, img_w, img_h, focal_length):
+
+    def convert_to_full_img_cam(
+        self, pare_cam, bbox_height, bbox_center, img_w, img_h, focal_length
+    ):
         s, tx, ty = pare_cam[:, 0], pare_cam[:, 1], pare_cam[:, 2]
-        tz = 2. * focal_length / (bbox_height * s)
-        cx = 2. * (bbox_center[:, 0] - (img_w / 2.)) / (s * bbox_height)
-        cy = 2. * (bbox_center[:, 1] - (img_h / 2.)) / (s * bbox_height)
+        tz = 2.0 * focal_length / (bbox_height * s)
+        cx = 2.0 * (bbox_center[:, 0] - (img_w / 2.0)) / (s * bbox_height)
+        cy = 2.0 * (bbox_center[:, 1] - (img_h / 2.0)) / (s * bbox_height)
         cam_t = torch.stack([tx + cx, ty + cy, tz], dim=-1)
         return cam_t
 
@@ -93,89 +107,153 @@ class HumanMeshEstimator:
         # print(self.smpl_model.J_regressor.shape)
         pred_keypoints_3d = smpl_output.joints
         pred_vertices = smpl_output.vertices
-        img_h, img_w = batch['img_size'][0]
+        img_h, img_w = batch["img_size"][0]
         cam_trans = self.convert_to_full_img_cam(
             pare_cam=pred_cam,
-            bbox_height=batch['box_size'],
-            bbox_center=batch['box_center'],
+            bbox_height=batch["box_size"],
+            bbox_center=batch["box_center"],
             img_w=img_w,
             img_h=img_h,
-            focal_length=batch['cam_int'][:, 0, 0]
+            focal_length=batch["cam_int"][:, 0, 0],
         )
         return pred_vertices, pred_keypoints_3d, cam_trans
 
     def get_cam_intrinsics(self, img):
         img_h, img_w, c = img.shape
         aspect_ratio, img_full_resized = resize_image(img, IMAGE_SIZE)
-        img_full_resized = np.transpose(img_full_resized.astype('float32'),
-                            (2, 0, 1))/255.0
-        img_full_resized = self.normalize_img(torch.from_numpy(img_full_resized).float())
+        img_full_resized = (
+            np.transpose(img_full_resized.astype("float32"), (2, 0, 1)) / 255.0
+        )
+        img_full_resized = self.normalize_img(
+            torch.from_numpy(img_full_resized).float()
+        )
 
         estimated_fov, _ = self.cam_model(img_full_resized.unsqueeze(0))
         vfov = estimated_fov[0, 1]
         fl_h = (img_h / (2 * torch.tan(vfov / 2))).item()
         # fl_h = (img_w * img_w + img_h * img_h) ** 0.5
-        cam_int = np.array([[fl_h, 0, img_w/2], [0, fl_h, img_h / 2], [0, 0, 1]]).astype(np.float32)
+        cam_int = np.array(
+            [[fl_h, 0, img_w / 2], [0, fl_h, img_h / 2], [0, 0, 1]]
+        ).astype(np.float32)
         return cam_int
-
 
     def remove_pelvis_rotation(self, smpl):
         """We don't trust the body orientation coming out of bedlam_cliff, so we're just going to zero it out."""
         smpl.body_pose[0][0][:] = np.zeros(3)
 
-
     def process_image(self, img_path, output_img_folder, i):
         img_cv2 = cv2.imread(str(img_path))
-        
-        fname, img_ext = os.path.splitext(os.path.basename(img_path))
-        overlay_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}{img_ext}')
-        smpl_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}.smpl')
-        mesh_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}.obj')
 
+        fname, img_ext = os.path.splitext(os.path.basename(img_path))
+        overlay_fname = os.path.join(
+            output_img_folder, f"{os.path.basename(fname)}_{i:06d}{img_ext}"
+        )
+        smpl_fname = os.path.join(
+            output_img_folder, f"{os.path.basename(fname)}_{i:06d}.smpl"
+        )
+        mesh_fname = os.path.join(
+            output_img_folder, f"{os.path.basename(fname)}_{i:06d}.obj"
+        )
+
+        start_time = time.time()
         # Detect humans in the image
-        det_out = self.detector(img_cv2)
-        det_instances = det_out['instances']
-        valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
-        boxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
-        bbox_scale = (boxes[:, 2:4] - boxes[:, 0:2]) / 200.0 
-        bbox_center = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
+        if self.detection == "Detectron":
+            ### DETECTRON2
+
+            det_out = self.detector(img_cv2)
+            det_instances = det_out["instances"]
+            valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
+            boxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
+            bbox_scale = (boxes[:, 2:4] - boxes[:, 0:2]) / 200.0
+            bbox_center = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
+
+        elif self.detection == "YOLO":
+            # else:
+            det_out = self.detector(img_cv2)
+            # Get the bounding boxes of detected persons
+            det_instances = det_out[0].boxes
+
+            # Get the tensors for easier filtering
+            boxes = det_instances.xyxy  # (N, 4) x1, y1, x2, y2
+            scores = det_instances.conf  # (N,)
+            classes = det_instances.cls  # (N,)
+
+            # Filter: class == 0 (person) and THRESHOLD (CONFIDENCE) score > 0.5
+            valid_idx = (classes == 0) & (scores > 0.5)
+            boxes = boxes[valid_idx]
+
+            # Now calculate bbox_center and bbox_scale like before
+            boxes_np = boxes.cpu().numpy()
+            bbox_scale = (boxes_np[:, 2:4] - boxes_np[:, 0:2]) / 200.0
+            bbox_center = (boxes_np[:, 2:4] + boxes_np[:, 0:2]) / 2.0
+
+        else:
+            raise ValueError(f"Unknown detector: {self.detection}")
+
+        total_time = time.time() - start_time
+        print(f"Person detection time: {total_time: .2f}s")
 
         # Get Camera intrinsics using HumanFoV Model
         cam_int = self.get_cam_intrinsics(img_cv2)
         dataset = Dataset(img_cv2, bbox_center, bbox_scale, cam_int, False, img_path)
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False, num_workers=10)
+        dataloader = torch.utils.data.DataLoader(
+            dataset, batch_size=32, shuffle=False, num_workers=10
+        )
 
         for batch in dataloader:
             batch = recursive_to(batch, self.device)
-            img_h, img_w = batch['img_size'][0]
+            img_h, img_w = batch["img_size"][0]
             with torch.no_grad():
                 out_smpl_params, out_cam, focal_length_ = self.model(batch)
 
-            output_vertices, output_joints, output_cam_trans = self.get_output_mesh(out_smpl_params, out_cam, batch)
+            output_vertices, output_joints, output_cam_trans = self.get_output_mesh(
+                out_smpl_params, out_cam, batch
+            )
 
-            mesh = trimesh.Trimesh(output_vertices[0].cpu().numpy() , self.smpl_model.faces,
-                            process=False)
+            mesh = trimesh.Trimesh(
+                output_vertices[0].cpu().numpy(), self.smpl_model.faces, process=False
+            )
             mesh.export(mesh_fname)
 
             # Render overlay
             focal_length = (focal_length_[0], focal_length_[0])
-            pred_vertices_array = (output_vertices + output_cam_trans.unsqueeze(1)).detach().cpu().numpy()
-            renderer = Renderer(focal_length=focal_length[0], img_w=img_w, img_h=img_h, faces=self.smpl_model.faces, same_mesh_color=True)
-            front_view = renderer.render_front_view(pred_vertices_array, bg_img_rgb=img_cv2.copy())
+            pred_vertices_array = (
+                (output_vertices + output_cam_trans.unsqueeze(1)).detach().cpu().numpy()
+            )
+            renderer = Renderer(
+                focal_length=focal_length[0],
+                img_w=img_w,
+                img_h=img_h,
+                faces=self.smpl_model.faces,
+                same_mesh_color=True,
+            )
+            front_view = renderer.render_front_view(
+                pred_vertices_array, bg_img_rgb=img_cv2.copy()
+            )
             final_img = front_view
             # Write overlay
             cv2.imwrite(overlay_fname, final_img)
             renderer.delete()
 
-
     def run_on_images(self, image_folder, out_folder):
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
-        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff', '*.webp']
-        images_list = [image for ext in image_extensions for image in glob(os.path.join(image_folder, ext))]
+        image_extensions = [
+            "*.jpg",
+            "*.jpeg",
+            "*.png",
+            "*.gif",
+            "*.bmp",
+            "*.tiff",
+            "*.webp",
+        ]
+        images_list = [
+            image
+            for ext in image_extensions
+            for image in glob(os.path.join(image_folder, ext))
+        ]
         for ind, img_path in enumerate(images_list):
             self.process_image(img_path, out_folder, ind)
-
 
     def run_on_video_frames(self, image_folder):
         """
@@ -183,7 +261,7 @@ class HumanMeshEstimator:
           - trajectories: (F, J, 3) numpy array of joint world positions
           - params_list:  list of dicts of SMPL & camera parameters per frame
         """
-        exts = ['*.png','*.jpg','*.jpeg','*.bmp','*.tiff']
+        exts = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff"]
         paths = []
         for e in exts:
             paths.extend(glob(os.path.join(image_folder, e)))
@@ -193,54 +271,104 @@ class HumanMeshEstimator:
         params_list = []
         for p in paths:
             img = cv2.imread(p)
-            inst = self.detector(img)['instances']
-            mask = (inst.pred_classes==0) & (inst.scores>0.5)
-            boxes = inst.pred_boxes.tensor[mask].cpu().numpy()
-            if len(boxes)==0:
-                traj.append(np.zeros((self.smpl_model.num_joints(),3)))
-                traj_camera.append(np.zeros((self.smpl_model.num_joints(),3)))
-                # append empty params
-                params_list.append({k: np.zeros_like(v[0].cpu().numpy()).tolist() for k,v in {}
-                                     .items()})
-                continue
 
-            # your existing cropping + cam_int extraction
-            center = ((boxes[0, 2:] + boxes[0, :2]) / 2)[None, :]
-            scale = ((boxes[0, 2:] - boxes[0, :2]) / 200)[None, :]
+            start_time = time.time()
+            # Detect humans in the image
+            if self.detection == "Detectron":
+                ### DETECTRON2
+
+                det_instances = self.detector(img)["instances"]
+                valid_idx = (det_instances.pred_classes == 0) & (
+                    det_instances.scores > 0.5
+                )
+                boxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
+
+                if len(boxes) == 0:
+                    traj.append(np.zeros((self.smpl_model.num_joints(), 3)))
+                    traj_camera.append(np.zeros((self.smpl_model.num_joints(), 3)))
+                    # append empty params
+                    params_list.append(
+                        {
+                            k: np.zeros_like(v[0].cpu().numpy()).tolist()
+                            for k, v in {}.items()
+                        }
+                    )
+                    continue
+                scale = (boxes[:, 2:4] - boxes[:, 0:2]) / 200.0
+                center = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
+
+            elif self.detection == "YOLO":
+                # else:
+                det_out = self.detector(img)
+                # Get the bounding boxes of detected persons
+                det_instances = det_out[0].boxes
+
+                # Get the tensors for easier filtering
+                boxes = det_instances.xyxy  # (N, 4) x1, y1, x2, y2
+                scores = det_instances.conf  # (N,)
+                classes = det_instances.cls  # (N,)
+
+                # Filter: class == 0 (person) and THRESHOLD (CONFIDENCE) score > 0.5
+                valid_idx = (classes == 0) & (scores > 0.5)
+                boxes = boxes[valid_idx]
+
+                if len(boxes) == 0:
+                    traj.append(np.zeros((self.smpl_model.num_joints(), 3)))
+                    traj_camera.append(np.zeros((self.smpl_model.num_joints(), 3)))
+                    # append empty params
+                    params_list.append(
+                        {
+                            k: np.zeros_like(v[0].cpu().numpy()).tolist()
+                            for k, v in {}.items()
+                        }
+                    )
+                    continue
+
+            
+                boxes_np = boxes.cpu().numpy()
+                scale = (boxes_np[:, 2:4] - boxes_np[:, 0:2]) / 200.0
+                center = (boxes_np[:, 2:4] + boxes_np[:, 0:2]) / 2.0
+
+            else:
+                raise ValueError(f"Unknown detector: {self.detection}")
+
+            total_time = time.time() - start_time
+            print(f"Person detection time: {total_time: .2f}s")
+
+
             cam_int = self.get_cam_intrinsics(img)  # e.g. a (3×3) matrix or a vector
 
             # build and run your DataLoader as before…
             ds = Dataset(img, center, scale, cam_int, False, None)
-            dl = torch.utils.data.DataLoader(
-                ds, batch_size=1, shuffle=False
-            )
+            dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=False)
             for b in dl:
                 b = recursive_to(b, self.device)
                 with torch.no_grad():
                     params, cam_pred, _ = self.model(b)
                 # collect params
                 frame_params = {}
-                for k,v in params.items():
+                for k, v in params.items():
                     frame_params[k] = v[0].cpu().numpy().tolist()
                 # include camera pred if desired
-                frame_params['cam_pred'] = cam_pred[0].cpu().numpy().tolist()
-                frame_params['focal_length'] = float(cam_int[0, 0])
-                
+                frame_params["cam_pred"] = cam_pred[0].cpu().numpy().tolist()
+                frame_params["focal_length"] = float(cam_int[0, 0])
+
                 params_list.append(frame_params)
                 # compute joints
                 verts, joints_local, cam_t = self.get_output_mesh(params, cam_pred, b)
                 # print(verts)
-                
+
                 # Determine how many body joints the model actually has:
-                n_body = self.smpl_model.J_regressor.shape[0]   # → 24 for SMPL-H
+                n_body = self.smpl_model.J_regressor.shape[0]  # → 24 for SMPL-H
                 # joints_local = joints_local[:, :n_body, :]  # shape (1, 24, 3)
-                joints_body_camera = joints_local[0].cpu().numpy() + cam_t[0].cpu().numpy()[None, :]
+                joints_body_camera = (
+                    joints_local[0].cpu().numpy() + cam_t[0].cpu().numpy()[None, :]
+                )
                 joints_body_local = joints_local[0].cpu().numpy()
                 traj_camera.append(joints_body_camera)
                 traj.append(joints_body_local)
-                
-                
-        return np.stack(traj,0), params_list, np.stack(traj_camera,0)
+
+        return np.stack(traj, 0), params_list, np.stack(traj_camera, 0)
 
     def save_trajectories_json(
         self,
@@ -319,7 +447,7 @@ class HumanMeshEstimator:
                 std_params[key] = arr.std(axis=0).tolist()
 
         data["average_parameters"] = avg_params
-        data["std_parameters"]     = std_params
+        data["std_parameters"] = std_params
 
         # Add our shape info
         data["shapes"] = shapes

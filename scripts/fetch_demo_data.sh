@@ -19,3 +19,5 @@ wget --post-data "username=$username&password=$password" 'https://download.is.tu
 wget --post-data "username=$username&password=$password" 'https://download.is.tue.mpg.de/download.php?domain=camerahmr&sfile=camerahmr_checkpoint_cleaned.ckpt' -O './data/pretrained-models/camerahmr_checkpoint_cleaned.ckpt' --no-check-certificate --continue
 wget --post-data "username=$username&password=$password" 'https://download.is.tue.mpg.de/download.php?domain=camerahmr&sfile=model_final_f05665.pkl' -O './data/pretrained-models/model_final_f05665.pkl' --no-check-certificate --continue
 wget --post-data "username=$username&password=$password" 'https://download.is.tue.mpg.de/download.php?domain=camerahmr&sfile=smpl_mean_params.npz' -O './data/smpl_mean_params.npz' --no-check-certificate --continue
+
+wget 'https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8s.pt' -O './data/pretrained-models/yolov8s.pt' --no-check-certificate --continue
