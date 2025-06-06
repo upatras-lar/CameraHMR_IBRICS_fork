@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# ---------------------------------- IBRICS ---------------------------------- #
+
 import os
 import argparse
 from mesh_estimator import HumanMeshEstimator
@@ -6,6 +9,7 @@ from video_process import extract_frames
 
 
 def make_parser():
+    # args: images/frames folder, input video, output directory, separate to save per joint, json
     parser = argparse.ArgumentParser(
         description='Extract 3D joint trajectories and SMPL parameters'
     )
@@ -63,6 +67,7 @@ def main():
         if not any(f.lower().endswith(ext) for f in files for ext in exts):
             parser.error(f"No images with extensions {exts} found in {images_dir}.")
 
+    # ----------------- Call the estimator and run on all frames ----------------- #
     estimator = HumanMeshEstimator()
     traj, params, traj_camera = estimator.run_on_video_frames(images_dir)
 
@@ -74,6 +79,8 @@ def main():
     output_path_local = os.path.join(out_dir, mode +"_local_"+ args.json_name)
     output_path_camera = os.path.join(out_dir, mode +"_camera_"+ args.json_name)
 
+
+    # ------------------- Save the trajectories in json format ------------------- #
     estimator.save_trajectories_json(
         trajectories=traj,
         params_list=params,
