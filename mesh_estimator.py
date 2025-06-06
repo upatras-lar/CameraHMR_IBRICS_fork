@@ -155,6 +155,8 @@ class HumanMeshEstimator:
             output_img_folder, f"{os.path.basename(fname)}_{i:06d}.obj"
         )
 
+
+        # Added YOLO model for human detection
         start_time = time.time()
         # Detect humans in the image
         if self.detection == "Detectron":
@@ -195,21 +197,28 @@ class HumanMeshEstimator:
 
         # Get Camera intrinsics using HumanFoV Model
         cam_int = self.get_cam_intrinsics(img_cv2)
+        
+        # Create the Torch dataset
         dataset = Dataset(img_cv2, bbox_center, bbox_scale, cam_int, False, img_path)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=32, shuffle=False, num_workers=10
         )
 
+
         for batch in dataloader:
             batch = recursive_to(batch, self.device)
             img_h, img_w = batch["img_size"][0]
+            
+            # inference of the model
             with torch.no_grad():
                 out_smpl_params, out_cam, focal_length_ = self.model(batch)
 
+            # get the vertices and the joints of the smpl
             output_vertices, output_joints, output_cam_trans = self.get_output_mesh(
                 out_smpl_params, out_cam, batch
             )
 
+            # create the smpl mesh
             mesh = trimesh.Trimesh(
                 output_vertices[0].cpu().numpy(), self.smpl_model.faces, process=False
             )
@@ -255,12 +264,16 @@ class HumanMeshEstimator:
         for ind, img_path in enumerate(images_list):
             self.process_image(img_path, out_folder, ind)
 
+
+    # ---------------------------------- IBRICS ---------------------------------- #
     def run_on_video_frames(self, image_folder):
         """
         Process all images in a folder (sorted), returning:
           - trajectories: (F, J, 3) numpy array of joint world positions
           - params_list:  list of dicts of SMPL & camera parameters per frame
         """
+        
+        # --------------------------- Get the video frames --------------------------- #
         exts = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff"]
         paths = []
         for e in exts:
@@ -269,6 +282,8 @@ class HumanMeshEstimator:
         traj = []
         traj_camera = []
         params_list = []
+        
+        # -------------------------------- Frames Loop ------------------------------- #
         for p in paths:
             img = cv2.imread(p)
 
@@ -283,6 +298,7 @@ class HumanMeshEstimator:
                 )
                 boxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
 
+                # if zero append 0
                 if len(boxes) == 0:
                     traj.append(np.zeros((self.smpl_model.num_joints(), 3)))
                     traj_camera.append(np.zeros((self.smpl_model.num_joints(), 3)))
@@ -312,6 +328,8 @@ class HumanMeshEstimator:
                 valid_idx = (classes == 0) & (scores > 0.5)
                 boxes = boxes[valid_idx]
 
+
+                # if zero append 0
                 if len(boxes) == 0:
                     traj.append(np.zeros((self.smpl_model.num_joints(), 3)))
                     traj_camera.append(np.zeros((self.smpl_model.num_joints(), 3)))
@@ -324,7 +342,7 @@ class HumanMeshEstimator:
                     )
                     continue
 
-            
+                
                 boxes_np = boxes.cpu().numpy()
                 scale = (boxes_np[:, 2:4] - boxes_np[:, 0:2]) / 200.0
                 center = (boxes_np[:, 2:4] + boxes_np[:, 0:2]) / 2.0
@@ -335,32 +353,37 @@ class HumanMeshEstimator:
             total_time = time.time() - start_time
             print(f"Person detection time: {total_time: .2f}s")
 
-
+            # Get camera intrinsics
             cam_int = self.get_cam_intrinsics(img)  # e.g. a (3×3) matrix or a vector
 
-            # build and run your DataLoader as before…
+            # build the torch Dataloader
             ds = Dataset(img, center, scale, cam_int, False, None)
             dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=False)
+            
+            # -------------------------------- Batch loop -------------------------------- #
             for b in dl:
                 b = recursive_to(b, self.device)
+                
+                #inference of the model
                 with torch.no_grad():
                     params, cam_pred, _ = self.model(b)
-                # collect params
+                    
+                # collect parameters for json
                 frame_params = {}
                 for k, v in params.items():
                     frame_params[k] = v[0].cpu().numpy().tolist()
-                # include camera pred if desired
                 frame_params["cam_pred"] = cam_pred[0].cpu().numpy().tolist()
                 frame_params["focal_length"] = float(cam_int[0, 0])
-
                 params_list.append(frame_params)
+                
                 # compute joints
                 verts, joints_local, cam_t = self.get_output_mesh(params, cam_pred, b)
-                # print(verts)
 
                 # Determine how many body joints the model actually has:
                 n_body = self.smpl_model.J_regressor.shape[0]  # → 24 for SMPL-H
                 # joints_local = joints_local[:, :n_body, :]  # shape (1, 24, 3)
+                
+                # Save camera-frame and local-frame as trajectories
                 joints_body_camera = (
                     joints_local[0].cpu().numpy() + cam_t[0].cpu().numpy()[None, :]
                 )
@@ -368,6 +391,7 @@ class HumanMeshEstimator:
                 traj_camera.append(joints_body_camera)
                 traj.append(joints_body_local)
 
+        # return the smpl and camera parameters list and the trajectories in local and camera frames
         return np.stack(traj, 0), params_list, np.stack(traj_camera, 0)
 
     def save_trajectories_json(
@@ -455,17 +479,3 @@ class HumanMeshEstimator:
         # Write out
         with open(filename, "w") as f:
             json.dump(data, f, indent=2)
-
-
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser(description='Extract 3D joint trajectories and SMPL parameters')
-#     parser.add_argument('images', type=str, help='Path to folder of image frames')
-#     parser.add_argument('--separate', action='store_true', help='Save per-joint instead of per-frame')
-#     parser.add_argument('--out', type=str, default='joint_trajectories.json', help='Output JSON filename')
-#     args = parser.parse_args()
-
-#     estimator = HumanMeshEstimator()
-#     traj, params = estimator.run_on_images(args.images)
-#     estimator.save_trajectories_json(traj, params, args.out, separate_per_joint=args.separate)
-#     mode = 'per-joint' if args.separate else 'per-frame'
-#     print(f"Saved {mode} trajectories & parameters for {traj.shape[0]} frames to {args.out}")
